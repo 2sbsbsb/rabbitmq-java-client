@@ -21,13 +21,18 @@ import com.rabbitmq.client.impl.ConnectionParams;
 import com.rabbitmq.client.impl.FrameHandlerFactory;
 import com.rabbitmq.client.impl.NetworkConnection;
 import com.rabbitmq.utility.Utility;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Connection implementation that performs automatic recovery when
@@ -51,6 +56,9 @@ import java.util.concurrent.TimeoutException;
  * @since 3.3.0
  */
 public class AutorecoveringConnection implements RecoverableConnection, NetworkConnection {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(AutorecoveringConnection.class);
+
     private final RecoveryAwareAMQConnectionFactory cf;
     private final Map<Integer, AutorecoveringChannel> channels;
     private final ConnectionParams params;
@@ -87,7 +95,34 @@ public class AutorecoveringConnection implements RecoverableConnection, NetworkC
         this.cf = new RecoveryAwareAMQConnectionFactory(params, f, addressResolver, metricsCollector);
         this.params = params;
 
+        setupErrorOnWriteListenerForPotentialRecovery();
+
         this.channels = new ConcurrentHashMap<Integer, AutorecoveringChannel>();
+    }
+
+    private void setupErrorOnWriteListenerForPotentialRecovery() {
+        final ThreadFactory threadFactory = this.params.getThreadFactory();
+        final Lock errorOnWriteLock = new ReentrantLock();
+        this.params.setErrorOnWriteListener((connection, exception) -> {
+            // this is called for any write error
+            // we should trigger the error handling and the recovery only once
+            if (errorOnWriteLock.tryLock()) {
+                try {
+                    Thread recoveryThread = threadFactory.newThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            AMQConnection c = (AMQConnection) connection;
+                            c.handleIoError(exception);
+                        }
+                    });
+                    recoveryThread.setName("RabbitMQ Error On Write Thread");
+                    recoveryThread.start();
+                } finally {
+                    errorOnWriteLock.unlock();
+                }
+            }
+            throw exception;
+        });
     }
 
     /**
@@ -505,7 +540,7 @@ public class AutorecoveringConnection implements RecoverableConnection, NetworkC
     }
 
     synchronized private void beginAutomaticRecovery() throws InterruptedException {
-        Thread.sleep(this.params.getNetworkRecoveryInterval());
+        Thread.sleep(this.params.getRecoveryDelayHandler().getDelay(0));
 
         this.notifyRecoveryListenersStarted();
 
@@ -543,9 +578,10 @@ public class AutorecoveringConnection implements RecoverableConnection, NetworkC
 	// Returns new connection if the connection was recovered, 
 	// null if application initiated shutdown while attempting recovery.  
     private RecoveryAwareAMQConnection recoverConnection() throws InterruptedException {
-        while (!manuallyClosed)
-		{
+        int attempts = 0;
+        while (!manuallyClosed) {
             try {
+                attempts++;
 				RecoveryAwareAMQConnection newConn = this.cf.newConnection();
 				synchronized(recoveryLock) {
 					if (!manuallyClosed) {
@@ -559,8 +595,7 @@ public class AutorecoveringConnection implements RecoverableConnection, NetworkC
 				newConn.abort();
 				return null;
             } catch (Exception e) {
-                // TODO: exponential back-off
-                Thread.sleep(this.params.getNetworkRecoveryInterval());
+                Thread.sleep(this.params.getRecoveryDelayHandler().getDelay(attempts));
                 this.getExceptionHandler().handleConnectionRecoveryException(this, e);
             }
         }
@@ -579,13 +614,13 @@ public class AutorecoveringConnection implements RecoverableConnection, NetworkC
     }
 
     private void notifyRecoveryListenersComplete() {
-        for (RecoveryListener f : this.recoveryListeners) {
+        for (RecoveryListener f : Utility.copy(this.recoveryListeners)) {
             f.handleRecovery(this);
         }
     }
 
     private void notifyRecoveryListenersStarted() {
-        for (RecoveryListener f : this.recoveryListeners) {
+        for (RecoveryListener f : Utility.copy(this.recoveryListeners)) {
             f.handleRecoveryStarted(this);
         }
     }
@@ -670,7 +705,9 @@ public class AutorecoveringConnection implements RecoverableConnection, NetworkC
         for (Map.Entry<String, RecordedConsumer> entry : Utility.copy(this.consumers).entrySet()) {
             String tag = entry.getKey();
             RecordedConsumer consumer = entry.getValue();
-
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug("Recovering consumer {}", consumer);
+            }
             try {
                 String newTag = consumer.recover();
                 // make sure server-generated tags are re-added. MK.
@@ -684,6 +721,9 @@ public class AutorecoveringConnection implements RecoverableConnection, NetworkC
 
                 for(ConsumerRecoveryListener crl : Utility.copy(this.consumerRecoveryListeners)) {
                     crl.consumerRecovered(tag, newTag);
+                }
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug("Consumer {} has recovered", consumer);
                 }
             } catch (Exception cause) {
                 final String message = "Caught an exception while recovering consumer " + tag +
@@ -779,6 +819,28 @@ public class AutorecoveringConnection implements RecoverableConnection, NetworkC
             this.maybeDeleteRecordedAutoDeleteExchange(b.getSource());
         }
     }
+    
+    /**
+     * Exclude the queue from the list of queues to recover after connection failure.
+     * Intended to be used in usecases where you want to remove the queue from this connection's recovery list but don't want to delete the queue from the server.
+     * 
+     * @param queue queue name to exclude from recorded recovery queues
+     * @param ifUnused if true, the RecordedQueue will only be excluded if no local consumers are using it.
+     */
+    public void excludeQueueFromRecovery(final String queue, final boolean ifUnused) {
+        if (ifUnused) {
+            // Note: This is basically the same as maybeDeleteRecordedAutoDeleteQueue except it works for non auto-delete queues as well.
+            synchronized (this.consumers) {
+                synchronized (this.recordedQueues) {
+                    if (!hasMoreConsumersOnQueue(this.consumers.values(), queue)) {
+                        deleteRecordedQueue(queue);
+                    }
+                }
+            }
+        } else {
+            deleteRecordedQueue(queue);
+        }
+    }
 
     void recordExchange(String exchange, RecordedExchange x) {
         this.recordedExchanges.put(exchange, x);
@@ -807,7 +869,7 @@ public class AutorecoveringConnection implements RecoverableConnection, NetworkC
                     RecordedQueue q = this.recordedQueues.get(queue);
                     // last consumer on this connection is gone, remove recorded queue
                     // if it is auto-deleted. See bug 26364.
-                    if((q != null) && q.isAutoDelete()) {
+                    if(q != null && q.isAutoDelete()) {
                         deleteRecordedQueue(queue);
                     }
                 }
@@ -822,7 +884,7 @@ public class AutorecoveringConnection implements RecoverableConnection, NetworkC
                     RecordedExchange x = this.recordedExchanges.get(exchange);
                     // last binding where this exchange is the source is gone, remove recorded exchange
                     // if it is auto-deleted. See bug 26364.
-                    if((x != null) && x.isAutoDelete()) {
+                    if(x != null && x.isAutoDelete()) {
                         deleteRecordedExchange(exchange);
                     }
                 }

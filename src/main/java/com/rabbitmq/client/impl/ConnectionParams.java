@@ -16,6 +16,8 @@
 package com.rabbitmq.client.impl;
 
 import com.rabbitmq.client.ExceptionHandler;
+import com.rabbitmq.client.RecoveryDelayHandler;
+import com.rabbitmq.client.RecoveryDelayHandler.DefaultRecoveryDelayHandler;
 import com.rabbitmq.client.SaslConfig;
 
 import java.util.Map;
@@ -24,8 +26,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 
 public class ConnectionParams {
-    private String username;
-    private String password;
+    private CredentialsProvider credentialsProvider;
     private ExecutorService consumerWorkServiceExecutor;
     private ScheduledExecutorService heartbeatExecutor;
     private ExecutorService shutdownExecutor;
@@ -38,21 +39,20 @@ public class ConnectionParams {
     private int shutdownTimeout;
     private SaslConfig saslConfig;
     private long networkRecoveryInterval;
+    private RecoveryDelayHandler recoveryDelayHandler;
     private boolean topologyRecovery;
     private int channelRpcTimeout;
     private boolean channelShouldCheckRpcResponseType;
+    private ErrorOnWriteListener errorOnWriteListener;
+    private int workPoolTimeout = -1;
 
     private ExceptionHandler exceptionHandler;
     private ThreadFactory threadFactory;
 
     public ConnectionParams() {}
 
-    public String getUsername() {
-        return username;
-    }
-
-    public String getPassword() {
-        return password;
+    public CredentialsProvider getCredentialsProvider() {
+        return credentialsProvider;
     }
 
     public ExecutorService getConsumerWorkServiceExecutor() {
@@ -102,6 +102,14 @@ public class ConnectionParams {
     public long getNetworkRecoveryInterval() {
         return networkRecoveryInterval;
     }
+    
+    /**
+     * Get the recovery delay handler.
+     * @return recovery delay handler or if none was set a {@link DefaultRecoveryDelayHandler} will be returned with a delay of {@link #getNetworkRecoveryInterval()}.
+     */
+    public RecoveryDelayHandler getRecoveryDelayHandler() {
+        return recoveryDelayHandler == null ? new DefaultRecoveryDelayHandler(networkRecoveryInterval) : recoveryDelayHandler;
+    }
 
     public boolean isTopologyRecoveryEnabled() {
         return topologyRecovery;
@@ -119,12 +127,8 @@ public class ConnectionParams {
         return channelShouldCheckRpcResponseType;
     }
 
-    public void setUsername(String username) {
-        this.username = username;
-    }
-
-    public void setPassword(String password) {
-        this.password = password;
+    public void setCredentialsProvider(CredentialsProvider credentialsProvider) {
+        this.credentialsProvider = credentialsProvider;
     }
 
     public void setConsumerWorkServiceExecutor(ExecutorService consumerWorkServiceExecutor) {
@@ -162,6 +166,10 @@ public class ConnectionParams {
     public void setNetworkRecoveryInterval(long networkRecoveryInterval) {
         this.networkRecoveryInterval = networkRecoveryInterval;
     }
+    
+    public void setRecoveryDelayHandler(final RecoveryDelayHandler recoveryDelayHandler) {
+        this.recoveryDelayHandler = recoveryDelayHandler;
+    }
 
     public void setTopologyRecovery(boolean topologyRecovery) {
         this.topologyRecovery = topologyRecovery;
@@ -197,5 +205,21 @@ public class ConnectionParams {
 
     public void setChannelShouldCheckRpcResponseType(boolean channelShouldCheckRpcResponseType) {
         this.channelShouldCheckRpcResponseType = channelShouldCheckRpcResponseType;
+    }
+
+    public void setErrorOnWriteListener(ErrorOnWriteListener errorOnWriteListener) {
+        this.errorOnWriteListener = errorOnWriteListener;
+    }
+
+    public ErrorOnWriteListener getErrorOnWriteListener() {
+        return errorOnWriteListener;
+    }
+
+    public void setWorkPoolTimeout(int workPoolTimeout) {
+        this.workPoolTimeout = workPoolTimeout;
+    }
+
+    public int getWorkPoolTimeout() {
+        return workPoolTimeout;
     }
 }

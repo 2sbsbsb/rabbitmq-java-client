@@ -90,7 +90,7 @@ public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel 
     /** Whether any nacks have been received since the last waitForConfirms(). */
     private volatile boolean onlyAcksReceived = true;
 
-    private final MetricsCollector metricsCollector;
+    protected final MetricsCollector metricsCollector;
 
     /**
      * Construct a new channel on the given connection with the given
@@ -392,6 +392,9 @@ public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel 
                 if (callback != null) {
                     try {
                         this.dispatcher.handleCancel(callback, consumerTag);
+                    } catch (WorkPoolFullException e) {
+                        // couldn't enqueue in work pool, propagating
+                        throw e;
                     } catch (Throwable ex) {
                         getConnection().getExceptionHandler().handleConsumerException(this,
                                                                                       ex,
@@ -454,6 +457,9 @@ public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel 
                                            envelope,
                                            (BasicProperties) command.getContentHeader(),
                                            command.getContentBody());
+        } catch (WorkPoolFullException e) {
+            // couldn't enqueue in work pool, propagating
+            throw e;
         } catch (Throwable ex) {
             getConnection().getExceptionHandler().handleConsumerException(this,
                 ex,
@@ -1555,8 +1561,8 @@ public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel 
     }
 
     @Override
-    public CompletableFuture<Command> asyncCompletableRpc(Method method, ExecutorService executorService) throws IOException {
-        return exnWrappingAsyncRpc(method, executorService);
+    public CompletableFuture<Command> asyncCompletableRpc(Method method) throws IOException {
+        return exnWrappingAsyncRpc(method);
     }
 
     @Override

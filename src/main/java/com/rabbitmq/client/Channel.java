@@ -18,7 +18,6 @@ package com.rabbitmq.client;
 import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeoutException;
 
 import com.rabbitmq.client.AMQP.BasicProperties;
@@ -1127,8 +1126,8 @@ public interface Channel extends ShutdownNotifier, AutoCloseable {
      * acknowledged once delivered; false if the server should expect
      * explicit acknowledgements
      * @param consumerTag a client-generated consumer tag to establish context
-     * @param noLocal true if the server should not deliver to this consumer
-     * messages published on this channel's connection
+     * @param noLocal True if the server should not deliver to this consumer
+     * messages published on this channel's connection. Note that the RabbitMQ server does not support this flag.
      * @param exclusive true if this is an exclusive consumer
      * @param callback an interface to the consumer object
      * @param arguments a set of arguments for the consume
@@ -1151,8 +1150,8 @@ public interface Channel extends ShutdownNotifier, AutoCloseable {
      * acknowledged once delivered; false if the server should expect
      * explicit acknowledgements
      * @param consumerTag a client-generated consumer tag to establish context
-     * @param noLocal true if the server should not deliver to this consumer
-     * messages published on this channel's connection
+     * @param noLocal True if the server should not deliver to this consumer
+     * messages published on this channel's connection. Note that the RabbitMQ server does not support this flag.
      * @param exclusive true if this is an exclusive consumer
      * @param arguments a set of arguments for the consume
      * @param deliverCallback callback when a message is delivered
@@ -1177,8 +1176,8 @@ public interface Channel extends ShutdownNotifier, AutoCloseable {
      * acknowledged once delivered; false if the server should expect
      * explicit acknowledgements
      * @param consumerTag a client-generated consumer tag to establish context
-     * @param noLocal true if the server should not deliver to this consumer
-     * messages published on this channel's connection
+     * @param noLocal True if the server should not deliver to this consumer
+     * messages published on this channel's connection. Note that the RabbitMQ server does not support this flag.
      * @param exclusive true if this is an exclusive consumer
      * @param arguments a set of arguments for the consume
      * @param deliverCallback callback when a message is delivered
@@ -1203,8 +1202,8 @@ public interface Channel extends ShutdownNotifier, AutoCloseable {
      * acknowledged once delivered; false if the server should expect
      * explicit acknowledgements
      * @param consumerTag a client-generated consumer tag to establish context
-     * @param noLocal true if the server should not deliver to this consumer
-     * messages published on this channel's connection
+     * @param noLocal True if the server should not deliver to this consumer
+     * messages published on this channel's connection. Note that the RabbitMQ server does not support this flag.
      * @param exclusive true if this is an exclusive consumer
      * @param arguments a set of arguments for the consume
      * @param deliverCallback callback when a message is delivered
@@ -1368,10 +1367,9 @@ public interface Channel extends ShutdownNotifier, AutoCloseable {
     /**
      * Asynchronously send a method over this channel.
      * @param method method to transmit over this channel.
-     * @param executorService executor used to complete the operation, can be null
      * @return a completable future that completes when the result is received
      * @throws IOException Problem transmitting method.
      */
-    CompletableFuture<Command> asyncCompletableRpc(Method method, ExecutorService executorService) throws IOException;
+    CompletableFuture<Command> asyncCompletableRpc(Method method) throws IOException;
 
 }

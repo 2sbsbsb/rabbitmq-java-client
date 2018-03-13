@@ -29,22 +29,4 @@ public class NioHelper {
         return read;
     }
 
-    static int retryRead(ReadableByteChannel channel, ByteBuffer buffer) throws IOException {
-        int attempt = 0;
-        int read = 0;
-        while(attempt < 3) {
-            try {
-                Thread.sleep(100L);
-            } catch (InterruptedException e) {
-                // ignore
-            }
-            read = read(channel, buffer);
-            if(read > 0) {
-                break;
-            }
-            attempt++;
-        }
-        return read;
-    }
-
 }

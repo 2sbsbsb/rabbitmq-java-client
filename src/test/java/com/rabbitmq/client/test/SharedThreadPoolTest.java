@@ -23,6 +23,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeoutException;
 
+import com.rabbitmq.client.Connection;
 import org.junit.Test;
 
 import com.rabbitmq.client.ConnectionFactory;
@@ -30,23 +31,52 @@ import com.rabbitmq.client.impl.AMQConnection;
 
 public class SharedThreadPoolTest extends BrokerTestCase {
     @Test public void willShutDownExecutor() throws IOException, TimeoutException {
-        ConnectionFactory cf = TestUtils.connectionFactory();
-        cf.setAutomaticRecoveryEnabled(false);
-        ExecutorService executor = Executors.newFixedThreadPool(8);
-        cf.setSharedExecutor(executor);
+        ExecutorService executor1 = null;
+        ExecutorService executor2 = null;
+        AMQConnection conn1 = null;
+        AMQConnection conn2 = null;
+        AMQConnection conn3 = null;
+        AMQConnection conn4 = null;
+        try {
+            ConnectionFactory cf = TestUtils.connectionFactory();
+            cf.setAutomaticRecoveryEnabled(false);
+            executor1 = Executors.newFixedThreadPool(8);
+            cf.setSharedExecutor(executor1);
 
-        AMQConnection conn1 = (AMQConnection)cf.newConnection();
-        assertFalse(conn1.willShutDownConsumerExecutor());
+            conn1 = (AMQConnection)cf.newConnection();
+            assertFalse(conn1.willShutDownConsumerExecutor());
 
-        AMQConnection conn2 = (AMQConnection)cf.newConnection(Executors.newSingleThreadExecutor());
-        assertFalse(conn2.willShutDownConsumerExecutor());
+            executor2 = Executors.newSingleThreadExecutor();
+            conn2 = (AMQConnection)cf.newConnection(executor2);
+            assertFalse(conn2.willShutDownConsumerExecutor());
 
-        AMQConnection conn3 = (AMQConnection)cf.newConnection((ExecutorService)null);
-        assertTrue(conn3.willShutDownConsumerExecutor());
+            conn3 = (AMQConnection)cf.newConnection((ExecutorService)null);
+            assertTrue(conn3.willShutDownConsumerExecutor());
 
-        cf.setSharedExecutor(null);
+            cf.setSharedExecutor(null);
 
-        AMQConnection conn4 = (AMQConnection)cf.newConnection();
-        assertTrue(conn4.willShutDownConsumerExecutor());
+            conn4 = (AMQConnection)cf.newConnection();
+            assertTrue(conn4.willShutDownConsumerExecutor());
+        } finally {
+            close(conn1);
+            close(conn2);
+            close(conn3);
+            close(conn4);
+            close(executor1);
+            close(executor2);
+        }
+        
+    }
+
+    void close(ExecutorService executor) {
+        if (executor != null) {
+            executor.shutdownNow();
+        }
+    }
+
+    void close(Connection connection) throws IOException {
+        if (connection != null) {
+            connection.close();
+        }
     }
 }

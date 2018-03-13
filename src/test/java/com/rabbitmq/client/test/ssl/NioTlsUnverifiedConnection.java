@@ -36,10 +36,13 @@ import static org.junit.Assert.fail;
  */
 public class NioTlsUnverifiedConnection extends BrokerTestCase {
 
+    public static final String QUEUE = "tls.nio.queue";
+
     public void openConnection()
         throws IOException, TimeoutException {
         try {
             connectionFactory.useSslProtocol();
+            connectionFactory.useNio();
         } catch (Exception ex) {
             throw new IOException(ex.toString());
         }
@@ -55,15 +58,20 @@ public class NioTlsUnverifiedConnection extends BrokerTestCase {
             }
         }
         if(connection == null) {
-            fail("Couldn't open TLS connection after 3 attemps");
+            fail("Couldn't open TLS connection after 3 attempts");
         }
 
+    }
+
+    @Override
+    protected void releaseResources() throws IOException {
+        channel.queueDelete(QUEUE);
     }
 
     @Test
     public void connectionGetConsume() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
-        connection = basicGetBasicConsume(connection, "tls.nio.queue", latch);
+        basicGetBasicConsume(connection, QUEUE, latch, 100 * 1000);
         boolean messagesReceived = latch.await(5, TimeUnit.SECONDS);
         assertTrue("Message has not been received", messagesReceived);
     }
@@ -94,15 +102,37 @@ public class NioTlsUnverifiedConnection extends BrokerTestCase {
         }
     }
 
-    private Connection basicGetBasicConsume(Connection connection, String queue, final CountDownLatch latch)
-        throws IOException, TimeoutException {
+    @Test public void messageSize() throws Exception {
+        int[] sizes = new int[]{100, 1000, 10 * 1000, 1 * 1000 * 1000, 5 * 1000 * 1000};
+        for (int size : sizes) {
+            sendAndVerifyMessage(size);
+        }
+    }
+
+    // The purpose of this test is to put some stress on client TLS layer (SslEngineByteBufferInputStream to be specific)
+    // in an attempt to trigger condition described in https://github.com/rabbitmq/rabbitmq-java-client/issues/317
+    // Unfortunately it is not guaranteed to be reproducible
+    @Test public void largeMessagesTlsTraffic() throws Exception {
+        for (int i = 0; i < 50; i++) {
+            sendAndVerifyMessage(76390);
+        }
+    }
+
+    private void sendAndVerifyMessage(int size) throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        boolean messageReceived = basicGetBasicConsume(connection, QUEUE, latch, size);
+        assertTrue("Message has not been received", messageReceived);
+    }
+
+    private boolean basicGetBasicConsume(Connection connection, String queue, final CountDownLatch latch, int msgSize)
+        throws Exception {
         Channel channel = connection.createChannel();
         channel.queueDeclare(queue, false, false, false, null);
         channel.queuePurge(queue);
 
-        channel.basicPublish("", queue, null, new byte[100 * 1000]);
+        channel.basicPublish("", queue, null, new byte[msgSize]);
 
-        channel.basicConsume(queue, false, new DefaultConsumer(channel) {
+        String tag = channel.basicConsume(queue, false, new DefaultConsumer(channel) {
 
             @Override
             public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
@@ -111,7 +141,11 @@ public class NioTlsUnverifiedConnection extends BrokerTestCase {
             }
         });
 
-        return connection;
+        boolean messageReceived = latch.await(20, TimeUnit.SECONDS);
+
+        channel.basicCancel(tag);
+
+        return messageReceived;
     }
 
 }

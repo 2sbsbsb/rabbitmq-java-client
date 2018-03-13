@@ -32,9 +32,10 @@ import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 final class Copyright {
-    final static String COPYRIGHT="Copyright (c) 2007-2016 Pivotal Software, Inc.";
+    final static String COPYRIGHT="Copyright (c) 2007-2018 Pivotal Software, Inc.";
     final static String LICENSE="Licensed under the MPL. See http://www.rabbitmq.com/";
 }
 
@@ -60,6 +61,12 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
 
     private final List<RecoveryCanBeginListener> recoveryCanBeginListeners =
             Collections.synchronizedList(new ArrayList<RecoveryCanBeginListener>());
+
+    private final ErrorOnWriteListener errorOnWriteListener;
+
+    private final int workPoolTimeout;
+
+    private final AtomicBoolean finalShutdownStarted = new AtomicBoolean(false);
 
     /**
      * Retrieve a copy of the default table of client properties that
@@ -129,8 +136,7 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
     private final int requestedFrameMax;
     private final int handshakeTimeout;
     private final int shutdownTimeout;
-    private final String username;
-    private final String password;
+    private final CredentialsProvider credentialsProvider;
     private final Collection<BlockedListener> blockedListeners = new CopyOnWriteArrayList<BlockedListener>();
     protected final MetricsCollector metricsCollector;
     private final int channelRpcTimeout;
@@ -209,13 +215,12 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
     public AMQConnection(ConnectionParams params, FrameHandler frameHandler, MetricsCollector metricsCollector)
     {
         checkPreconditions();
-        this.username = params.getUsername();
-        this.password = params.getPassword();
+        this.credentialsProvider = params.getCredentialsProvider();
         this._frameHandler = frameHandler;
         this._virtualHost = params.getVirtualHost();
         this._exceptionHandler = params.getExceptionHandler();
 
-        this._clientProperties = new HashMap<String, Object>(params.getClientProperties());
+        this._clientProperties = new HashMap<>(params.getClientProperties());
         this.requestedFrameMax = params.getRequestedFrameMax();
         this.requestedChannelMax = params.getRequestedChannelMax();
         this.requestedHeartbeat = params.getRequestedHeartbeat();
@@ -245,10 +250,14 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
         this._inConnectionNegotiation = true; // we start out waiting for the first protocol response
 
         this.metricsCollector = metricsCollector;
+
+        this.errorOnWriteListener = params.getErrorOnWriteListener() != null ? params.getErrorOnWriteListener() :
+            (connection, exception) -> { throw exception; }; // we just propagate the exception for non-recoverable connections
+        this.workPoolTimeout = params.getWorkPoolTimeout();
     }
 
     private void initializeConsumerWorkService() {
-        this._workService  = new ConsumerWorkService(consumerWorkServiceExecutor, threadFactory, shutdownTimeout);
+        this._workService  = new ConsumerWorkService(consumerWorkServiceExecutor, threadFactory, workPoolTimeout, shutdownTimeout);
     }
 
     private void initializeHeartbeatSender() {
@@ -323,8 +332,10 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
                                               "server offered [" + connStart.getMechanisms() + "]");
             }
 
+            String username = credentialsProvider.getUsername();
+            String password = credentialsProvider.getPassword();
             LongString challenge = null;
-            LongString response = sm.handleChallenge(null, this.username, this.password);
+            LongString response = sm.handleChallenge(null, username, password);
 
             do {
                 Method method = (challenge == null)
@@ -341,7 +352,7 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
                         connTune = (AMQP.Connection.Tune) serverResponse;
                     } else {
                         challenge = ((AMQP.Connection.Secure) serverResponse).getChallenge();
-                        response = sm.handleChallenge(challenge, this.username, this.password);
+                        response = sm.handleChallenge(challenge, username, password);
                     }
                 } catch (ShutdownSignalException e) {
                     Method shutdownMethod = e.getReason();
@@ -556,7 +567,11 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
      * Public API - flush the output buffers
      */
     public void flush() throws IOException {
-        _frameHandler.flush();
+        try {
+            _frameHandler.flush();
+        } catch (IOException ioe) {
+            this.errorOnWriteListener.handle(this, ioe);
+        }
     }
 
     private static int negotiatedMaxValue(int clientValue, int serverValue) {
@@ -575,15 +590,24 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
          */
         @Override
         public void run() {
+            boolean shouldDoFinalShutdown = true;
             try {
                 while (_running) {
                     Frame frame = _frameHandler.readFrame();
                     readFrame(frame);
                 }
             } catch (Throwable ex) {
-                handleFailure(ex);
+                if (ex instanceof InterruptedException) {
+                    // loop has been interrupted during shutdown,
+                    // no need to do it again
+                    shouldDoFinalShutdown = false;
+                } else {
+                    handleFailure(ex);
+                }
             } finally {
-                doFinalShutdown();
+                if (shouldDoFinalShutdown) {
+                    doFinalShutdown();
+                }
             }
         }
     }
@@ -594,6 +618,9 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
             try {
                 readFrame(frame);
                 return true;
+            } catch (WorkPoolFullException e) {
+                // work pool is full, we propagate this one.
+                throw e;
             } catch (Throwable ex) {
                 try {
                     handleFailure(ex);
@@ -686,14 +713,33 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
 
     /** private API */
     public void doFinalShutdown() {
-        _frameHandler.close();
-        _appContinuation.set(null);
-        notifyListeners();
-        // assuming that shutdown listeners do not do anything
-        // asynchronously, e.g. start new threads, this effectively
-        // guarantees that we only begin recovery when all shutdown
-        // listeners have executed
-        notifyRecoveryCanBeginListeners();
+        if (finalShutdownStarted.compareAndSet(false, true)) {
+            _frameHandler.close();
+            _appContinuation.set(null);
+            closeMainLoopThreadIfNecessary();
+            notifyListeners();
+            // assuming that shutdown listeners do not do anything
+            // asynchronously, e.g. start new threads, this effectively
+            // guarantees that we only begin recovery when all shutdown
+            // listeners have executed
+            notifyRecoveryCanBeginListeners();
+        }
+    }
+
+    private void closeMainLoopThreadIfNecessary() {
+        if (mainLoopReadThreadNotNull() && notInMainLoopThread()) {
+            if (this.mainLoopThread.isAlive()) {
+                this.mainLoopThread.interrupt();
+            }
+        }
+    }
+
+    private boolean notInMainLoopThread() {
+        return Thread.currentThread() != this.mainLoopThread;
+    }
+
+    private boolean mainLoopReadThreadNotNull() {
+        return this.mainLoopThread != null;
     }
 
     private void notifyRecoveryCanBeginListeners() {
@@ -879,7 +925,6 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
         _heartbeatSender.shutdown();
 
         _channel0.processShutdownSignal(sse, !initiatedByApplication, notifyRpc);
-
         return sse;
     }
 
@@ -1021,7 +1066,7 @@ public class AMQConnection extends ShutdownNotifierComponent implements Connecti
 
     @Override public String toString() {
         final String virtualHost = "/".equals(_virtualHost) ? _virtualHost : "/" + _virtualHost;
-        return "amqp://" + this.username + "@" + getHostAddress() + ":" + getPort() + virtualHost;
+        return "amqp://" + this.credentialsProvider.getUsername() + "@" + getHostAddress() + ":" + getPort() + virtualHost;
     }
 
     private String getHostAddress() {

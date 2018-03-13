@@ -22,6 +22,7 @@ import com.rabbitmq.client.impl.AMQConnection;
 import com.rabbitmq.client.impl.AMQImpl;
 import com.rabbitmq.client.impl.ChannelN;
 import com.rabbitmq.client.impl.ConsumerWorkService;
+import com.rabbitmq.client.impl.AMQImpl.Basic;
 
 import java.io.IOException;
 
@@ -33,8 +34,8 @@ import java.io.IOException;
  * @since 3.3.0
  */
 public class RecoveryAwareChannelN extends ChannelN {
-    private long maxSeenDeliveryTag = 0;
-    private long activeDeliveryTagOffset = 0;
+    private volatile long maxSeenDeliveryTag = 0;
+    private volatile long activeDeliveryTagOffset = 0;
 
     /**
      * Construct a new channel on the given connection with the given
@@ -82,21 +83,21 @@ public class RecoveryAwareChannelN extends ChannelN {
 
     @Override
     public void basicAck(long deliveryTag, boolean multiple) throws IOException {
-        // FIXME no check if deliveryTag = 0 (ack all)
         long realTag = deliveryTag - activeDeliveryTagOffset;
-        // 0 tag means ack all
-        if (realTag >= 0) {
-            super.basicAck(realTag, multiple);
+        // 0 tag means ack all when multiple is set
+        if (realTag > 0 || (multiple && realTag == 0)) {
+            transmit(new Basic.Ack(realTag, multiple));
+            metricsCollector.basicAck(this, deliveryTag, multiple);
         }
     }
 
     @Override
     public void basicNack(long deliveryTag, boolean multiple, boolean requeue) throws IOException {
-        // FIXME no check if deliveryTag = 0 (nack all)
         long realTag = deliveryTag - activeDeliveryTagOffset;
-        // 0 tag means nack all
-        if (realTag >= 0) {
-            super.basicNack(realTag, multiple, requeue);
+        // 0 tag means nack all when multiple is set
+        if (realTag > 0 || (multiple && realTag == 0)) {
+            transmit(new Basic.Nack(realTag, multiple, requeue));
+            metricsCollector.basicNack(this, deliveryTag);
         }
     }
 
@@ -104,7 +105,8 @@ public class RecoveryAwareChannelN extends ChannelN {
     public void basicReject(long deliveryTag, boolean requeue) throws IOException {
         long realTag = deliveryTag - activeDeliveryTagOffset;
         if (realTag > 0) {
-            super.basicReject(realTag, requeue);
+            transmit(new Basic.Reject(realTag, requeue));
+            metricsCollector.basicReject(this, deliveryTag);
         }
     }
 

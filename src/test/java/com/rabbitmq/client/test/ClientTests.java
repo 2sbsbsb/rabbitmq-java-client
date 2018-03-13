@@ -43,7 +43,8 @@ import org.junit.runners.Suite;
     JSONReadWriteTest.class,
     SharedThreadPoolTest.class,
     DnsRecordIpAddressResolverTests.class,
-    StandardMetricsCollectorTest.class,
+    MetricsCollectorTest.class,
+    MicrometerMetricsCollectorTest.class,
     DnsSrvRecordAddressResolverTest.class,
     JavaNioTest.class,
     ConnectionFactoryTest.class,
@@ -51,7 +52,14 @@ import org.junit.runners.Suite;
     RpcTest.class,
     SslContextFactoryTest.class,
     LambdaCallbackTest.class,
-    ChannelAsyncCompletableFutureTest.class
+    ChannelAsyncCompletableFutureTest.class,
+    RecoveryDelayHandlerTest.class,
+    FrameBuilderTest.class,
+    PropertyFileInitialisationTest.class,
+    ClientVersionTest.class,
+    TestUtilsTest.class,
+    StrictExceptionHandlerTest.class,
+    NoAutoRecoveryWhenTcpWindowIsFullTest.class
 })
 public class ClientTests {
 
