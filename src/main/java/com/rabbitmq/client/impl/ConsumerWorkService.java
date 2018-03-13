@@ -24,22 +24,16 @@ import java.util.concurrent.ThreadFactory;
 import com.rabbitmq.client.Channel;
 
 final public class ConsumerWorkService {
-	
-    private static final int MAX_RUNNABLE_BLOCK_SIZE = 16;    
+    private static final int MAX_RUNNABLE_BLOCK_SIZE = 16;
+    private static final int DEFAULT_NUM_THREADS = Runtime.getRuntime().availableProcessors() * 2;
     private final ExecutorService executor;
     private final boolean privateExecutor;
     private final WorkPool<Channel, Runnable> workPool;
     private final int shutdownTimeout;
 
-    /**
-     * @param executor
-     * @param consumerWorkerCount
-     * @param threadFactory
-     * @param shutdownTimeout
-     */
-    public ConsumerWorkService(ExecutorService executor, int consumerWorkerCount, ThreadFactory threadFactory, int shutdownTimeout) {
+    public ConsumerWorkService(ExecutorService executor, ThreadFactory threadFactory, int shutdownTimeout) {
         this.privateExecutor = (executor == null);
-        this.executor = (executor == null) ? Executors.newFixedThreadPool(consumerWorkerCount, threadFactory)
+        this.executor = (executor == null) ? Executors.newFixedThreadPool(DEFAULT_NUM_THREADS, threadFactory)
                                            : executor;
         this.workPool = new WorkPool<Channel, Runnable>();
         this.shutdownTimeout = shutdownTimeout;

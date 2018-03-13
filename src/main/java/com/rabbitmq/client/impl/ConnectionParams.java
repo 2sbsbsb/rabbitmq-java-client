@@ -41,7 +41,6 @@ public class ConnectionParams {
     private boolean topologyRecovery;
     private int channelRpcTimeout;
     private boolean channelShouldCheckRpcResponseType;
-    private int consumerWorkerCount;
 
     private ExceptionHandler exceptionHandler;
     private ThreadFactory threadFactory;
@@ -199,13 +198,4 @@ public class ConnectionParams {
     public void setChannelShouldCheckRpcResponseType(boolean channelShouldCheckRpcResponseType) {
         this.channelShouldCheckRpcResponseType = channelShouldCheckRpcResponseType;
     }
-
-	public int getConsumerWorkerCount() {
-		return consumerWorkerCount;
-	}
-
-	public void setConsumerWorkerCount(int consumerWorkerCount) {
-		this.consumerWorkerCount = consumerWorkerCount;
-	}
-    
 }
